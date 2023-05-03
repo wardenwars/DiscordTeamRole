@@ -1,0 +1,8 @@
+#token: BOT_TOKEN
+#guildId: GUILD_ID
+
+redTeamName: Red
+blueTeamName: Blue
+
+redRoleName: Red
+blueRoleName: Blue

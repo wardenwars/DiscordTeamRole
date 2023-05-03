@@ -1,0 +1,5 @@
+name: DiscordTeamRole
+version: '${project.version}'
+main: net.nutchi.discordteamrole.DiscordTeamRole
+api-version: 1.19
+authors: [ Nutchi ]
