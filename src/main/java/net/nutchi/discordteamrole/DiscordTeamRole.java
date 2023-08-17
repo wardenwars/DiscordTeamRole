@@ -2,9 +2,15 @@ package net.nutchi.discordteamrole;
 
 import java.awt.Color;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.security.auth.login.LoginException;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scoreboard.ScoreboardManager;
@@ -19,7 +25,6 @@ import net.dv8tion.jda.api.utils.MemberCachePolicy;
 
 public final class DiscordTeamRole extends JavaPlugin {
     private JDA jda;
-    private String token;
     private String guildId;
     private String redTeamName;
     private String blueTeamName;
@@ -30,7 +35,7 @@ public final class DiscordTeamRole extends JavaPlugin {
     public void onEnable() {
         saveDefaultConfig();
 
-        token = getConfig().getString("token");
+        String token = getConfig().getString("token");
         guildId = getConfig().getString("guildId");
         redTeamName = getConfig().getString("redTeamName");
         blueTeamName = getConfig().getString("blueTeamName");
@@ -44,10 +49,14 @@ public final class DiscordTeamRole extends JavaPlugin {
                     .enableIntents(GatewayIntent.GUILD_MEMBERS)
                     .setMemberCachePolicy(MemberCachePolicy.ALL)
                     .build();
-                getServer().getScheduler().runTaskTimer(this, () -> updateRole(), 0, 200);
+                getServer().getScheduler().runTaskTimer(this, this::updateRole, 0, 200);
             } catch(LoginException e) {
                 e.printStackTrace();
             }
+        }
+
+        if (jda == null) {
+            getServer().getPluginManager().disablePlugin(this);
         }
     }
 
@@ -60,16 +69,16 @@ public final class DiscordTeamRole extends JavaPlugin {
             List<Role> redRoles = guild.getRolesByName(redRoleName, false);
             List<Role> blueRoles = guild.getRolesByName(blueRoleName, false);
 
-            if (redRoles.size() == 0) {
+            if (redRoles.isEmpty()) {
                 guild.createRole().setName(redRoleName).setColor(Color.RED).queue();
             }
-            if (blueRoles.size() == 0) {
+            if (blueRoles.isEmpty()) {
                 guild.createRole().setName(blueRoleName).setColor(Color.BLUE).queue();
             }
 
             redTeamEntries.forEach(e -> {
                 List<Member> cachedMembers = guild.getMembersByNickname(e, true);
-                if (cachedMembers.size() != 0) {
+                if (!cachedMembers.isEmpty()) {
                     updateRedTeamRole(cachedMembers, guild, redRoles, blueRoles);
                 } else {
                     guild.retrieveMembersByPrefix(e, 1).onSuccess(
@@ -79,7 +88,7 @@ public final class DiscordTeamRole extends JavaPlugin {
 
             blueTeamEntries.forEach(e -> {
                 List<Member> cachedMembers = guild.getMembersByNickname(e, true);
-                if (cachedMembers.size() != 0) {
+                if (!cachedMembers.isEmpty()) {
                     updateBlueTeamRole(cachedMembers, guild, redRoles, blueRoles);
                 } else {
                     guild.retrieveMembersByPrefix(e, 1).onSuccess(
@@ -91,10 +100,10 @@ public final class DiscordTeamRole extends JavaPlugin {
 
     private void updateRedTeamRole(List<Member> members, Guild guild, List<Role> redRoles, List<Role> blueRoles) {
         members.forEach(m -> {
-            if (!m.getRoles().stream().anyMatch(r -> redRoles.contains(r))) {
+            if (m.getRoles().stream().noneMatch(redRoles::contains)) {
                 redRoles.stream().findFirst().ifPresent(r -> guild.addRoleToMember(m, r).queue());
-            };
-            if (m.getRoles().stream().anyMatch(r -> blueRoles.contains(r))) {
+            }
+            if (m.getRoles().stream().anyMatch(blueRoles::contains)) {
                 blueRoles.forEach(r -> guild.removeRoleFromMember(m, r).queue());
             }
         });
@@ -102,17 +111,17 @@ public final class DiscordTeamRole extends JavaPlugin {
 
     private void updateBlueTeamRole(List<Member> members, Guild guild, List<Role> redRoles, List<Role> blueRoles) {
         members.forEach(m -> {
-            if (!m.getRoles().stream().anyMatch(r -> blueRoles.contains(r))) {
+            if (m.getRoles().stream().noneMatch(blueRoles::contains)) {
                 blueRoles.stream().findFirst().ifPresent(r -> guild.addRoleToMember(m, r).queue());
-            };
-            if (m.getRoles().stream().anyMatch(r -> redRoles.contains(r))) {
+            }
+            if (m.getRoles().stream().anyMatch(redRoles::contains)) {
                 redRoles.forEach(r -> guild.removeRoleFromMember(m, r).queue());
             }
         });
     }
 
     private List<String> getTeamEntries(String name) {
-        return getTeam(name).map(t -> t.getEntries().stream().collect(Collectors.toList())).orElse(new ArrayList<>());
+        return getTeam(name).map(t -> new ArrayList<>(t.getEntries())).orElse(new ArrayList<>());
     }
 
     private Optional<Team> getTeam(String name) {
@@ -129,8 +138,39 @@ public final class DiscordTeamRole extends JavaPlugin {
     @Override
     public void onDisable() {
         if (jda != null) {
+            try {
+                clearRoleMembers().get(10, TimeUnit.SECONDS);
+            } catch (TimeoutException | InterruptedException | ExecutionException e) {
+                e.printStackTrace();
+            }
+
             jda.shutdownNow();
             jda = null;
         }
+    }
+
+    private CompletableFuture<Void> clearRoleMembers() {
+        CompletableFuture<Void> task = new CompletableFuture<>();
+
+        Guild guild = jda.getGuildById(guildId);
+        if (guild != null) {
+            getLogger().info("Removing roles from all members");
+
+            guild.loadMembers()
+                    .onSuccess(members -> {
+                        List<Role> redRoles = guild.getRolesByName(redRoleName, false);
+                        List<Role> blueRoles = guild.getRolesByName(blueRoleName, false);
+                        List<Role> roles = Stream.of(redRoles, blueRoles).flatMap(Collection::stream).collect(Collectors.toList());
+
+                        members.forEach(m -> guild.modifyMemberRoles(m, null, roles).onErrorMap(t -> null).complete());
+
+                        task.complete(null);
+                    })
+                    .onError(task::completeExceptionally);
+        } else {
+            task.complete(null);
+        }
+
+        return task;
     }
 }
